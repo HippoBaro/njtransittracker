@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	listenAddr  = ":80"
+	listenAddr  = ":8080"
 	upstreamURL = "https://tt.horner.tj"
 )
 
