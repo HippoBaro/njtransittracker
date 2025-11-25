@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
 	"njtransittracker/model"
+	"njtransittracker/njtransit"
 
 	"golang.org/x/net/websocket"
 )
@@ -24,21 +26,23 @@ const (
 )
 
 type WebsocketServer struct {
-	addr     string
-	upstream string
-	proxy    *httputil.ReverseProxy
+	addr           string
+	upstreamDomain string
+	proxy          *httputil.ReverseProxy
+	etaClient      *njtransit.ETAClient
 }
 
-func NewWebsocketServer(addr, proxyTarget string) (*WebsocketServer, error) {
-	upstream, err := url.Parse(proxyTarget)
+func NewWebsocketServer(addr, upstreamDomain string, etaClient *njtransit.ETAClient) (*WebsocketServer, error) {
+	upstream, err := url.Parse(fmt.Sprintf("https://%s", upstreamDomain))
 	if err != nil {
-		return nil, fmt.Errorf("parse proxy target %q: %w", proxyTarget, err)
+		return nil, fmt.Errorf("parse proxy target %q: %w", upstreamDomain, err)
 	}
 
 	return &WebsocketServer{
-		addr:     addr,
-		upstream: proxyTarget,
-		proxy:    httputil.NewSingleHostReverseProxy(upstream),
+		addr:           addr,
+		upstreamDomain: upstreamDomain,
+		proxy:          httputil.NewSingleHostReverseProxy(upstream),
+		etaClient:      etaClient,
 	}, nil
 }
 
@@ -54,7 +58,7 @@ func (s *WebsocketServer) Start(ctx context.Context) error {
 			return
 		}
 
-		log.Info("Proxying HTTP request to upstream", "endpoint", s.upstream, "request", r.RequestURI)
+		log.Info("Proxying HTTP request to upstream", "endpoint", s.upstreamDomain, "request", r.RequestURI)
 		s.proxy.ServeHTTP(w, r)
 	})
 
@@ -103,45 +107,95 @@ func (s *WebsocketServer) handleWebsocketConnection(ctx context.Context, conn *w
 		log.Warn("Closing connection: failed to receive initial message", "err", err, "remote", conn.Request().RemoteAddr)
 		return
 	}
-	log.Info("Initial message received", "remote", conn.Request().RemoteAddr, "message", message)
+
+	log.Info("New client connected", "remote", conn.Request().RemoteAddr, "message", message)
 
 	heartbeatTicker := time.NewTicker(heartbeatInterval)
 	defer heartbeatTicker.Stop()
 
+	notifyBus, finalize := s.etaClient.Notify()
+	defer finalize()
+
+	s.etaClient.Track("158", "21852")
+	s.etaClient.Track("159", "21852")
+	s.etaClient.Track("156", "21852")
+	s.etaClient.Track("HBLR", "PORT IMP")
+
+	var etas model.Trips
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-heartbeatTicker.C:
-			if err = sendHeartbeat(conn); err != nil {
-				log.Warn("Heartbeat failed, closing connection", "err", err, "remote", conn.Request().RemoteAddr)
+			if err = send(conn, model.Heartbeat{Event: model.EventHeartBeat}); err != nil {
+				log.Warn("Failed to send heartbeat, closing connection", "err", err, "remote", conn.Request().RemoteAddr)
 				return
 			}
+
+			// Wait until either data source wakes us up
+		case err = <-notifyBus:
+			if err != nil {
+				log.Warn("Failed to retrieve schedule changes for subscribed routes", "err", err, "remote", conn.Request().RemoteAddr)
+				continue
+			}
+
+			busETAs := slices.Concat(
+				s.etaClient.GetNextETAs("156", "21852"),
+				s.etaClient.GetNextETAs("158", "21852"),
+				s.etaClient.GetNextETAs("159", "21852"),
+			).Sort().Trim(2)
+			trainETA := s.etaClient.GetNextETAs("HBLR", "PORT IMP").Filter("WEST SIDE").WithRouteName("HBLR").Sort().Trim(3 - len(busETAs))
+			combined := slices.Concat(busETAs, trainETA).Sort()
+
+			if etas.Equal(combined) {
+				// No changes detected since we last pushed an ETA update
+
+				continue
+			}
+
+			schedMessage := model.ScheduleChange{
+				Event: model.EventSchedule,
+				Data:  model.ScheduleData{Trips: combined},
+			}
+
+			log.Info("sending schedule", "remote", conn.Request().RemoteAddr, "schedule", schedMessage)
+			if err = send(conn, schedMessage); err != nil {
+				log.Warn("Failed to send schedule change, closing connection", "err", err, "remote", conn.Request().RemoteAddr)
+				return
+			}
+			etas = combined
 		}
 	}
 }
 
-func waitForInitialMessage(conn *websocket.Conn) (model.Event[any], error) {
+func send[T any](conn *websocket.Conn, message model.Event[T]) (err error) {
+	if err = conn.SetWriteDeadline(time.Now().Add(websocketWriteDeadline)); err != nil {
+		log.Warn("Closing connection: failed to set connection property", "err", err, "remote", conn.Request().RemoteAddr)
+		return
+	}
+
+	return websocket.JSON.Send(conn, message)
+}
+
+func waitForInitialMessage(conn *websocket.Conn) (model.SubscribeRequest, error) {
 	if err := conn.SetReadDeadline(time.Now().Add(initialMessageTimeout)); err != nil {
-		return model.Event[any]{}, err
+		return model.SubscribeRequest{}, err
 	}
 	defer conn.SetReadDeadline(time.Time{})
 
 	var raw []byte
 	if err := websocket.Message.Receive(conn, &raw); err != nil {
-		return model.Event[any]{}, fmt.Errorf("remote failed to send message within intial window: %w", err)
+		return model.SubscribeRequest{}, fmt.Errorf("remote failed to send message within intial window: %w", err)
 	}
 
-	return model.FromRaw(raw)
-}
-
-func sendHeartbeat(conn *websocket.Conn) error {
-	if err := conn.SetWriteDeadline(time.Now().Add(websocketWriteDeadline)); err != nil {
-		return err
+	msg, err := model.FromRaw(raw)
+	if err != nil {
+		return model.SubscribeRequest{}, err
+	} else if msg.Event != model.EventScheduleSubscribe {
+		return model.SubscribeRequest{}, errors.New("malformed handshake: expected `schedule:subscribe` event")
 	}
-	defer conn.SetWriteDeadline(time.Time{})
 
-	return websocket.Message.Send(conn, model.Heartbeat{})
+	return model.As[model.SubscribeData](msg), nil
 }
 
 func isWebsocketRequest(r *http.Request) bool {

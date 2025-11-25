@@ -1,7 +1,10 @@
 package model
 
 import (
+	"cmp"
 	"encoding/json"
+	"slices"
+	"strings"
 )
 
 type EventType string
@@ -18,11 +21,6 @@ type Event[T any] struct {
 }
 
 type ListModeType string
-
-const (
-	ListModeSequential   ListModeType = "sequential"
-	ListModeNextPerRoute ListModeType = "nextPerRoute"
-)
 
 type SubscribeData struct {
 	FeedCode        *string       `json:"feedCode,omitempty"`
@@ -45,6 +43,70 @@ type Trip struct {
 	IsRealtime    bool   `json:"isRealtime"`
 }
 
+func (t Trip) Equal(other Trip) bool {
+	return t.TripID == other.TripID &&
+		t.StopID == other.StopID &&
+		t.RouteID == other.RouteID &&
+		t.RouteName == other.RouteName &&
+		t.RouteColor == other.RouteColor &&
+		t.StopName == other.StopName &&
+		t.Headsign == other.Headsign &&
+		t.ArrivalTime == other.ArrivalTime &&
+		t.DepartureTime == other.DepartureTime &&
+		t.IsRealtime == other.IsRealtime
+}
+
+type Trips []Trip
+
+func (s Trips) WithRouteName(name string) Trips {
+	for i := range s {
+		s[i].RouteName = name
+	}
+
+	return s
+}
+
+func (s Trips) Sort() Trips {
+	slices.SortFunc(s, func(a, b Trip) int {
+		return cmp.Compare(a.DepartureTime, b.DepartureTime)
+	})
+
+	return s
+}
+
+func (s Trips) Trim(limit int) Trips {
+	if len(s) > limit {
+		s = s[:limit]
+	}
+
+	return s
+}
+
+func (s Trips) Equal(other Trips) bool {
+	// Compare trips using Trip.Equal
+	if len(s) != len(other) {
+		return false
+	}
+
+	for i, trip := range s {
+		if !trip.Equal(other[i]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func (s Trips) Filter(headsign string) (ret Trips) {
+	for _, trip := range s {
+		if strings.Contains(trip.Headsign, headsign) {
+			ret = append(ret, trip)
+		}
+	}
+
+	return ret
+}
+
 type ScheduleData struct {
 	Trips []Trip `json:"trips"`
 }
@@ -53,8 +115,8 @@ type SubscribeRequest = Event[SubscribeData]
 type ScheduleChange = Event[ScheduleData]
 type Heartbeat = Event[struct{}]
 
-func As[O interface{}, D interface{}](event Event[O]) Event[D] {
-	var v = any(event.Data).(*D)
+func As[D interface{}](event Event[any]) Event[D] {
+	var v = event.Data.(*D)
 	return Event[D]{Event: event.Event, Data: *v}
 }
 
@@ -76,7 +138,7 @@ func FromRaw(raw []byte) (_ Event[any], err error) {
 	case EventSchedule:
 		ret = &ScheduleData{}
 	case EventHeartBeat:
-		ret = struct{}{}
+		ret = &struct{}{}
 	}
 
 	err = json.Unmarshal(id.Data, ret)
