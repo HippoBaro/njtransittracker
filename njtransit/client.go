@@ -168,6 +168,7 @@ type ETAClient struct {
 	mu           sync.RWMutex
 	started      bool
 	notify       []chan error
+	lastFetch    time.Time
 	trackedStops map[trackedRoute]struct{}
 	etas         map[trackedRoute][]ETA
 }
@@ -252,6 +253,13 @@ func (c *ETAClient) Notify() (<-chan error, func()) {
 	}
 }
 
+func (c *ETAClient) UpToDate() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return len(c.trackedStops) == 0 || time.Since(c.lastFetch) < 2*c.cfg.RefreshInterval
+}
+
 // GetNextETAs returns up to limit arrivals for the given route at the tracked stop.
 // If limit is zero or negative, all matching ETAs are returned.
 func (c *ETAClient) GetNextETAs(routeID, stopID string) model.Trips {
@@ -307,6 +315,12 @@ func (c *ETAClient) run() {
 			case ch <- err:
 			default:
 			}
+		}
+
+		if err == nil {
+			c.mu.Lock()
+			c.lastFetch = time.Now()
+			c.mu.Unlock()
 		}
 	}
 }

@@ -52,6 +52,16 @@ func (s *WebsocketServer) Start(ctx context.Context) error {
 		s.handleWebsocketConnection(ctx, conn)
 	})
 
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		if !s.etaClient.UpToDate() {
+			http.Error(w, fmt.Sprintf("stale schedule data"), http.StatusServiceUnavailable)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok\n"))
+	})
+
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if isWebsocketRequest(r) {
 			wsHandler.ServeHTTP(w, r)
