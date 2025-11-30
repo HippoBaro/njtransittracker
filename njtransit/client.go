@@ -344,7 +344,6 @@ func (c *ETAClient) refreshAllTrackedRoutes() error {
 	var (
 		parts        []string
 		now          = time.Now()
-		constFmt     = "01/02/2006 3:04:05 PM"
 		etasByKey    = make(map[trackedRoute][]ETA)
 		stopAliases  = make(map[string]string)       // alias -> stopID
 		dvAliases    = make(map[string]trackedRoute) // alias -> (route, stop)
@@ -380,7 +379,7 @@ func (c *ETAClient) refreshAllTrackedRoutes() error {
     header
     passload
     publicRoute
-    schedDepTime
+    departuretime
     vehicleId
   }`, fieldName, s.RouteID, s.StopID))
 	}
@@ -480,10 +479,15 @@ func (c *ETAClient) refreshAllTrackedRoutes() error {
 		}
 
 		for _, a := range arrivals {
-			etaTime, err := time.ParseInLocation(constFmt, a.Time, NYLocation)
+			etaTime, err := parseBusArrivalTime(a.DepartureTime, now, NYLocation)
 			if err != nil {
-				log.Warn("Failed to parse time from getBusDV5", "time", a.Time, "err", err)
+				log.Warn("Failed to parse time from getBusDV5", "time", a.DepartureTime, "err", err)
 				continue
+			}
+
+			// If this time has already passed today, assume it's for tomorrow.
+			if etaTime.Before(now) {
+				etaTime = etaTime.Add(24 * time.Hour)
 			}
 
 			eta := ETA{
@@ -553,11 +557,11 @@ type graphQLBatchResponse struct {
 }
 
 type arrivalDV struct {
-	Header    string `json:"header"`
-	Occupancy string `json:"passload"`
-	Route     string `json:"publicRoute"`
-	Time      string `json:"schedDepTime"`
-	VehicleID string `json:"vehicleID"`
+	Header        string `json:"header"`
+	Occupancy     string `json:"passload"`
+	Route         string `json:"publicRoute"`
+	DepartureTime string `json:"departuretime"`
+	VehicleID     string `json:"vehicleID"`
 }
 
 type arrivalByStop struct {
