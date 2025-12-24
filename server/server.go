@@ -20,7 +20,7 @@ import (
 
 const (
 	initialMessageTimeout  = 30 * time.Second
-	heartbeatInterval      = 10 * time.Second
+	heartbeatInterval      = 5 * time.Second
 	websocketWriteDeadline = 5 * time.Second
 	serverShutdownTimeout  = 5 * time.Second
 )
