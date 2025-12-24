@@ -238,8 +238,12 @@ func (c *ETAClient) Track(routeID, stopID string) {
 	c.mu.Unlock()
 }
 
-func (c *ETAClient) Notify() (<-chan error, func()) {
-	ret := make(chan error)
+// Notify registers a listener channel that will receive a notification
+// (the error result of the refresh, if any) every time the background
+// refresh loop completes.
+func (c *ETAClient) Notify() (chan error, func()) {
+	ret := make(chan error, 1)
+
 	c.mu.Lock()
 	c.notify = append(c.notify, ret)
 	c.mu.Unlock()
@@ -250,6 +254,38 @@ func (c *ETAClient) Notify() (<-chan error, func()) {
 			return c == ret
 		})
 		c.mu.Unlock()
+	}
+}
+
+// Cached sends a synthetic notification on the provided channel if the client
+// has cached schedule data for any tracked route that is at least as recent
+// as the given timestamp.
+func (c *ETAClient) Cached(since time.Time, ch chan<- error) {
+	if c == nil || ch == nil {
+		return
+	}
+
+	c.mu.RLock()
+	hasTracked := len(c.trackedStops) > 0
+	last := c.lastFetch
+	c.mu.RUnlock()
+
+	// Nothing is being tracked or we have never successfully fetched data.
+	if !hasTracked || last.IsZero() {
+		return
+	}
+
+	// Only notify if our cached data is at least as recent as the caller's
+	// reference timestamp.
+	if last.Before(since) {
+		return
+	}
+
+	// Non-blocking send to avoid stalling the caller if they are not yet
+	// ready to receive.
+	select {
+	case ch <- nil:
+	default:
 	}
 }
 

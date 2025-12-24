@@ -131,6 +131,9 @@ func (s *WebsocketServer) handleWebsocketConnection(ctx context.Context, conn *w
 	s.etaClient.Track("156", "21852")
 	s.etaClient.Track("HBLR", "PORT IMP")
 
+	// Pull initial data from the client to avoid waiting for the next refresh, if any.
+	s.etaClient.Cached(time.Now().Add(-30*time.Second), notifyBus)
+
 	var etas model.Trips
 	for {
 		select {
