@@ -572,6 +572,28 @@ func (c *ETAClient) refreshAllTrackedRoutes() error {
 
 	// Surface any top-level GraphQL errors if we ended up with no ETAs at all.
 	if len(etasByKey) == 0 && len(gqlResp.Errors) > 0 {
+		// If all of the reported errors are "no service is scheduled for this
+		// stop at this time", treat this as a valid but empty schedule rather
+		// than a hard error.
+		allNoService := true
+		for _, ge := range gqlResp.Errors {
+			if !isUpstreamNoService(fmt.Errorf("graphql error: %s", ge.Message)) {
+				allNoService = false
+				break
+			}
+		}
+
+		if allNoService {
+			// Clear any cached ETAs for the currently tracked stops so callers
+			// see "no departures" instead of stale data.
+			c.mu.Lock()
+			for _, s := range stops {
+				delete(c.etas, s)
+			}
+			c.mu.Unlock()
+			return nil
+		}
+
 		return fmt.Errorf("graphql error: %s", gqlResp.Errors[0].Message)
 	}
 
@@ -670,4 +692,16 @@ func isUpstreamResourceExhausted(err error) bool {
 
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "retry in a few minutes")
+}
+
+// isUpstreamNoService returns true if the given error indicates that no
+// service is scheduled for the requested stop at this time. This should be
+// interpreted as "no departures" rather than a hard error.
+func isUpstreamNoService(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no service is scheduled for this stop at this time")
 }
