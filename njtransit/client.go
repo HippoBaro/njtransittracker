@@ -165,12 +165,13 @@ type ETAClient struct {
 
 	fetchNow chan struct{}
 
-	mu           sync.RWMutex
-	started      bool
-	notify       []chan error
-	lastFetch    time.Time
-	trackedStops map[trackedRoute]struct{}
-	etas         map[trackedRoute][]ETA
+	mu               sync.RWMutex
+	started          bool
+	notify           []chan error
+	lastFetch        time.Time
+	trackedStops     map[trackedRoute]struct{}
+	etas             map[trackedRoute][]ETA
+	realtimeDisabled bool
 }
 
 // NewETAClient creates a new ETA client. Call Start to begin the refresh loop.
@@ -321,7 +322,19 @@ func (c *ETAClient) GetNextETAs(routeID, stopID string) model.Trips {
 		return filtered[i].Departure.Before(filtered[j].Departure)
 	})
 
-	return ETAs(filtered).ToTrips()
+	trips := ETAs(filtered).ToTrips()
+
+	// If the last refresh failed in a way that forced us to rely on cached
+	// data (for example, when the upstream asks us to retry in a few minutes),
+	// surface these ETAs as non‑realtime so clients know they are potentially
+	// stale.
+	if c.realtimeDisabled {
+		for i := range trips {
+			trips[i].IsRealtime = false
+		}
+	}
+
+	return trips
 }
 
 func (c *ETAClient) run() {
@@ -337,6 +350,7 @@ func (c *ETAClient) run() {
 		}
 
 		err := c.refreshAllTrackedRoutes()
+		softFailure := isUpstreamResourceExhausted(err)
 
 		// Take a snapshot of the current notifier channels under read lock so we
 		// can iterate without holding the mutex and avoid races with Notify().
@@ -346,16 +360,28 @@ func (c *ETAClient) run() {
 
 		// Send notifications in a non-blocking fashion so a single slow or dead
 		// listener cannot stall the entire refresh loop.
+		notifyErr := err
+		if softFailure {
+			// Treat upstream "retry later" errors as soft failures: we keep using
+			// cached ETAs but still wake up listeners so they can re‑emit the
+			// schedule (with realtime disabled).
+			notifyErr = nil
+		}
+
 		for _, ch := range notifiers {
 			select {
-			case ch <- err:
+			case ch <- notifyErr:
 			default:
 			}
 		}
 
-		if err == nil || isUpstreamResourceExhausted(err) {
+		// On success we refresh the freshness timestamp and keep realtime data
+		// enabled. On soft failures we still bump freshness but mark realtime
+		// data as disabled so callers can surface degraded ETAs.
+		if err == nil || softFailure {
 			c.mu.Lock()
 			c.lastFetch = time.Now()
+			c.realtimeDisabled = softFailure
 			c.mu.Unlock()
 		}
 	}
