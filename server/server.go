@@ -134,7 +134,7 @@ func (s *WebsocketServer) handleWebsocketConnection(ctx context.Context, conn *w
 	// Pull initial data from the client to avoid waiting for the next refresh, if any.
 	s.etaClient.Cached(time.Now().Add(-30*time.Second), notifyBus)
 
-	var etas model.Trips
+	var etas *model.Trips
 	for {
 		select {
 		case <-ctx.Done():
@@ -160,7 +160,7 @@ func (s *WebsocketServer) handleWebsocketConnection(ctx context.Context, conn *w
 			trainETA := s.etaClient.GetNextETAs("HBLR", "PORT IMP").FilterHeadsign("WEST SIDE").FilterPriorArrival(time.Now()).WithRouteName("HBLR").Sort().Trim(3 - len(busETAs))
 			combined := slices.Concat(busETAs, trainETA).Sort()
 
-			if etas.Equal(combined) {
+			if etas != nil && etas.Equal(combined) {
 				// No changes detected since we last pushed an ETA update
 
 				continue
@@ -176,7 +176,7 @@ func (s *WebsocketServer) handleWebsocketConnection(ctx context.Context, conn *w
 				log.Warn("Failed to send schedule change, closing connection", "err", err, "remote", conn.Request().RemoteAddr)
 				return
 			}
-			etas = combined
+			etas = &combined
 		}
 	}
 }
