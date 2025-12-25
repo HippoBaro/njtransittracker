@@ -157,7 +157,7 @@ func (s *WebsocketServer) handleWebsocketConnection(ctx context.Context, conn *w
 				s.etaClient.GetNextETAs("158", "21852"),
 				s.etaClient.GetNextETAs("159", "21852"),
 			).Sort().Trim(2)
-			trainETA := s.etaClient.GetNextETAs("HBLR", "PORT IMP").Filter("WEST SIDE").WithRouteName("HBLR").Sort().Trim(3 - len(busETAs))
+			trainETA := s.etaClient.GetNextETAs("HBLR", "PORT IMP").FilterHeadsign("WEST SIDE").FilterPriorArrival(time.Now()).WithRouteName("HBLR").Sort().Trim(3 - len(busETAs))
 			combined := slices.Concat(busETAs, trainETA).Sort()
 
 			if etas.Equal(combined) {

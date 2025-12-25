@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strings"
+	"time"
 )
 
 type EventType string
@@ -97,9 +98,19 @@ func (s Trips) Equal(other Trips) bool {
 	return true
 }
 
-func (s Trips) Filter(headsign string) (ret Trips) {
+func (s Trips) FilterHeadsign(headsign string) (ret Trips) {
 	for _, trip := range s {
 		if strings.Contains(trip.Headsign, headsign) {
+			ret = append(ret, trip)
+		}
+	}
+
+	return ret
+}
+
+func (s Trips) FilterPriorArrival(arrivalTime time.Time) (ret Trips) {
+	for _, trip := range s {
+		if trip.ArrivalTime >= int(arrivalTime.Unix()) {
 			ret = append(ret, trip)
 		}
 	}

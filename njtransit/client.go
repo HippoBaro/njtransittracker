@@ -353,7 +353,7 @@ func (c *ETAClient) run() {
 			}
 		}
 
-		if err == nil {
+		if err == nil || isUpstreamResourceExhausted(err) {
 			c.mu.Lock()
 			c.lastFetch = time.Now()
 			c.mu.Unlock()
@@ -633,4 +633,15 @@ func parseBusArrivalTime(value string, now time.Time, loc *time.Location) (time.
 	}
 
 	return departure, nil
+}
+
+// isUpstreamResourceExhausted returns true if the given error appears to come
+// from an overloaded upstream API server.
+func isUpstreamResourceExhausted(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "retry in a few minutes")
 }
