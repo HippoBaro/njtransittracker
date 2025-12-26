@@ -134,10 +134,12 @@ func (e ETAs) ToTrips() (ret model.Trips) {
 			}
 		}
 
+		// Sanitize to remove leading and trailing whitespace and multiple spaces.
+		headsign := strings.Join(strings.Fields(eta.Destination), " ")
 		ret = append(ret, model.Trip{
 			RouteName:     eta.RouteID,
 			RouteColor:    color,
-			Headsign:      eta.Destination,
+			Headsign:      headsign,
 			ArrivalTime:   int(eta.Departure.Unix()),
 			DepartureTime: int(eta.Departure.Unix()),
 			IsRealtime:    eta.Realtime(),
